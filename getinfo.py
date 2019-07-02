@@ -12,11 +12,13 @@ import psutil
 import ctypes
 import re
 import requests
+import subprocess
 requests.packages.urllib3.disable_warnings()
 
 info_dict = {}
 ip = socket.gethostbyname(socket.getfqdn(socket.gethostname()))
 sysstr = platform.system()
+
 
 if sysstr == 'Windows':
     import wmi
@@ -125,7 +127,7 @@ def get_usb_info():
                 info = line.strip().split(':')
 
                 if len(info) == 3 and info[0].startswith('Bus'):
-                    usb['HARDWARE_NAME'] = info[2].strip()
+                    usb['HARDWARE_NAME'] = info[2].split(' ', 1)[1].strip()
                     usb['HARDWARE_POSITION'] = info[0].strip()
                     usb['HARDWARE_TYPE'] = 'USB Hub'
                 elif len(info) == 2 and info[0].strip() == 'Device Status':
@@ -146,9 +148,6 @@ def get_usb_info():
                 elif info[0].startswith('bcdUSB'):
                     index = len('bcdUSB')
                     usb['HARDWARE_DESC'] = 'USB' + info[0][index:].strip()
-                # elif info[0].startswith('idProduct'):
-                #     index = len('idProduct')
-                #     usb['HARDWARE_TYPE'] = info[0][index:].strip()
             usb_dict.append(usb)
 
     with os.popen('lspci -vvv') as output:
@@ -161,7 +160,7 @@ def get_usb_info():
                     line = line.split(':')
                     if line[1].find('USB controller') > 0:
                         vendor,name = line[2].strip().split(' ', 1)
-                        usb['HARDWARE_NAME'] = name.strip()
+                        usb['HARDWARE_NAME'] = name.split('(')[0].strip()
                         usb['HARDWARE_POSITION'] = ''
                         usb['HARDWARE_TYPE'] = 'USB Controller'
                         usb['HARDWARE_UUID'] = ''
@@ -174,7 +173,7 @@ def get_usb_info():
             elif each.find('Ethernet controller'):
                 pass
 
-    # print(json.dumps(usb_dict,indent=4))
+    print(json.dumps(usb_dict,indent=4))
     return usb_dict
 
 def get_mainboard_info():
@@ -196,12 +195,152 @@ def get_mainboard_info():
                 else:
                     info['HARDWARE_STATUS'] = ''
             else:
-                # index = len(data[0].strip()) - len('Information') - 1
-                # info['HARDWARE_DESC'] = data[0][:index].strip()
                 info['HARDWARE_DESC'] = 'Base Board'
         # print(json.dumps(info, indent=4))
     return info
 
+
+def get_network_info():
+    info = []
+    with os.popen('lshw -class network') as output:
+        tmp = output.read().split('*-network')
+        for data in tmp:
+            net_dict = {}
+            for line in data.splitlines():
+                line = line.strip().split(':')
+                if line[0].strip() == 'logical name':
+                    net_dict['HARDWARE_NAME'] = line[1].strip()
+                    net_dict['HARDWARE_TYPE'] = 'Network Adapter'
+                    net_dict['HARDWARE_POSITION'] = ''
+                elif line[0].strip() == 'description':
+                    net_dict['HARDWARE_DESC'] = line[1].strip()
+                elif line[0].strip() == 'vendor':
+                    net_dict['HARDWARE_VENDOR'] = line[1].strip()
+                elif line[0].strip() == 'serial':
+                    net_dict['HARDWARE_UUID'] = ':'.join(line).strip()[8:]
+                elif line[0].strip() == 'configuration':
+                    line[1] = line[1].strip()
+                    index = line[1].find('link')
+                    pos = line[1].find(' ', index)
+                    link = line[1][index:pos].split('=')[1].strip()
+                    if link == 'yes':
+                        status = 'on'
+                    else:
+                        status = 'off'
+                    net_dict['HARDWARE_STATUS'] = status
+            if len(net_dict) > 0:
+                info.append(net_dict)
+
+        # print(json.dumps(info, indent=4))
+    return info
+
+
+def get_disk_info():
+    disk_name = []
+    info = []
+    # 获取硬盘名称
+    with os.popen('lsblk -pd') as output:
+        i = 0
+        for line in output.readlines():
+            if i == 0:
+                i = 1
+                continue
+            line = line.strip()
+            data = re.split(r'\s+', line)
+            disk_name.append(data[0])
+
+    for name in disk_name:
+        cmd1 = 'smartctl -x %s' % name
+        cmd2 = 'smartctl -H %s | grep Status' % name
+        cmd3 = 'hdparm -I %s | grep "Serial Number"' % name
+        disk_dict = {}
+        index = name.rfind('/')
+        disk_dict['HARDWARE_NAME'] = name[index+1:]
+        disk_dict['HARDWARE_POSITION'] = name[:index+1]
+        with os.popen(cmd1) as output:
+            for line in output.readlines():
+                data = line.strip().split(':')
+                if len(data) > 1:
+                    if data[0].strip() == 'Vendor':
+                        disk_dict['HARDWARE_VENDOR'] = data[1].strip()
+                    elif data[0].strip() == 'Device type':
+                        disk_dict['HARDWARE_TYPE'] = data[1].strip()
+                    elif data[0].strip() == 'Product':
+                        disk_dict['HARDWARE_DESC'] = data[1].strip()
+
+        with os.popen(cmd2) as output:
+            for line in output.readlines():
+                data = line.strip().split(':')
+                disk_dict['HARDWARE_STATUS'] = data[1].strip()
+
+
+        res = subprocess.getstatusoutput(cmd3)
+        if res[0] != 0:
+            disk_dict['HARDWARE_UUID'] = ''
+        else:
+            disk_dict['HARDWARE_UUID'] = res[1].split(':')[1].strip()
+        info.append(disk_dict)
+    # print(json.dumps(info, indent=4))
+    return info
+
+
+def get_mem_info():
+    info = []
+    with os.popen("dmidecode -t 16") as output:
+        mem_dict = {}
+        for line in output.readlines():
+            line = line.strip()
+            if line.startswith('Location'):
+                mem_dict['HARDWARE_POSITION'] = line.split(':')[1].strip()
+            elif line.startswith('Physical Memory Array'):
+                mem_dict['HARDWARE_NAME'] = 'Physical Memory Array'
+                mem_dict['HARDWARE_TYPE'] = 'Memory Slots'
+            elif line.startswith('Use'):
+                mem_dict['HARDWARE_DESC'] = line.split(':')[1].strip()
+            elif line.startswith('Number'):
+                mem_dict['HARDWARE_DESC'] += ',' + line.strip()
+            elif line.startswith('Maximum'):
+                mem_dict['HARDWARE_DESC'] += ',' + line.strip()
+                mem_dict['HARDWARE_STATUS'] = ''
+                mem_dict['HARDWARE_UUID'] = ''
+                mem_dict['HARDWARE_VENDOR'] = ''
+        if len(mem_dict) > 0:
+            info.append(mem_dict)
+
+    with os.popen('dmidecode -t 17') as output:
+        i = 0
+        tmp = output.read().split('Memory Device')
+        for data in tmp:
+            mem_dict = {}
+            flag = 1
+            if i > 0:
+                for line in data.splitlines():
+                    if line.strip().startswith('Size: No Module Installed'):
+                        flag = 0
+                        break
+                    line = line.strip().split(':')
+                    if len(line) < 2:
+                        continue
+                    elif line[0].strip() == 'Locator':
+                        mem_dict['HARDWARE_POSITION'] = line[1].strip()
+                        mem_dict['HARDWARE_NAME'] = 'Memory Device ' + str(i - 1)
+                    elif line[0].strip() == 'Type':
+                        mem_dict['HARDWARE_TYPE'] = line[1].strip()
+                    elif line[0].strip() == 'Type Detail':
+                        mem_dict['HARDWARE_TYPE'] += line[1]
+                    elif line[0].strip() == 'Manufacturer':
+                        mem_dict['HARDWARE_VENDOR'] = line[1].strip()
+                    elif line[0].strip() == 'Serial Number':
+                        mem_dict['HARDWARE_UUID'] = line[1].strip()
+                    elif line[0].strip() == 'Form Factor':
+                        mem_dict['HARDWARE_DESC'] = 'Physical Memory,' + line[1].strip()
+                    elif line[0].strip() == 'Speed':
+                        mem_dict['HARDWARE_STATUS'] = line[1].strip()
+            i += 1
+            if flag and len(mem_dict) > 0:
+                info.append(mem_dict)
+    print(json.dumps(info, indent=4))
+    return info
 
 def get_other_info():
     info = []
@@ -230,36 +369,36 @@ def get_other_info():
                 info.append(other_dict)
             i += 1
         # scsi
-        with os.popen('cat /proc/scsi/scsi') as output:
-            tmp = output.read().split('Host')
-            for scsi in tmp:
-                other_dict = {}
-                for line in scsi.splitlines():
-                    line = re.sub(r'\s+', ' ', line.strip())
-                    line = re.sub(r':\s+', ':', line)
-                    print(line)
-                    if line.startswith('Attached'):
-                        continue
-                    if line.startswith('Vendor'):
-                        data = line.split(' ', 1)
-                        print(data)
-                        other_dict['HARDWARE_VENDOR'] = data[0].split(':')[1].strip()
-                        other_dict['HARDWARE_DESC'] = data[1].split('Rev')[0].split(':')[1].strip()
-                        other_dict['HARDWARE_POSITION'] = ''
-                        other_dict['HARDWARE_STATUS'] = ''
-                    else:
-                        data = line.strip().split(' ')
-                        print(data)
-                        key, value = data[0].split(':')
-                        if key == '':
-                            other_dict['HARDWARE_NAME'] = value
-                            other_dict['HARDWARE_UUID'] = data[2].split(':')[1].strip()
-                        elif key == 'Type':
-                            other_dict['HARDWARE_TYPE'] = value
-                info.append(other_dict)
+        # with os.popen('cat /proc/scsi/scsi') as output:
+        #     tmp = output.read().split('Host')
+        #     for scsi in tmp:
+        #         other_dict = {}
+        #         for line in scsi.splitlines():
+        #             line = re.sub(r'\s+', ' ', line.strip())
+        #             line = re.sub(r':\s+', ':', line)
+        #             if line.startswith('Attached'):
+        #                 continue
+        #             if line.startswith('Vendor'):
+        #                 data = line.split(' ', 1)
+        #                 other_dict['HARDWARE_VENDOR'] = data[0].split(':')[1].strip()
+        #                 other_dict['HARDWARE_DESC'] = data[1].split('Rev')[0].split(':')[1].strip()
+        #                 other_dict['HARDWARE_POSITION'] = ''
+        #                 other_dict['HARDWARE_STATUS'] = ''
+        #             else:
+        #                 data = line.strip().split(' ')
+        #                 key, value = data[0].split(':')
+        #                 if key == '':
+        #                     other_dict['HARDWARE_NAME'] = value
+        #                     other_dict['HARDWARE_UUID'] = data[2].split(':')[1].strip()
+        #                 elif key == 'Type':
+        #                     other_dict['HARDWARE_TYPE'] = value
+        #         if len(other_dict) > 0:
+        #             info.append(other_dict)
 
-            print(json.dumps(info, indent=4))
+            # print(json.dumps(info, indent=4))
         return info
+
+
 
 
 def get_hardware_info():
@@ -272,7 +411,6 @@ def get_hardware_info():
             hardware_dict['HARDWARS'].append(info)
     else:
         hardware_dict['HARDWARS'].append(cpu)
-    cdrom = get_cdrom_info()
     usb = get_usb_info()
     for info in usb:
         hardware_dict['HARDWARS'].append(info)
@@ -280,6 +418,16 @@ def get_hardware_info():
     mainboard = get_mainboard_info()
     hardware_dict['HARDWARS'].append(mainboard)
 
+    network = get_network_info()
+    for info in network:
+        hardware_dict['HARDWARS'].append(info)
+
+    disk = get_disk_info()
+    for info in disk:
+        hardware_dict['HARDWARS'].append(info)
+    mem = get_mem_info()
+    for info in mem:
+        hardware_dict['HARDWARS'].append(info)
     other = get_other_info()
     for info in other:
         hardware_dict['HARDWARS'].append(info)
@@ -412,8 +560,8 @@ if __name__ == '__main__':
     sft_url = 'https://10.77.0.190/secops/servlet/SoftwareScript'
     hd_url = 'https://10.77.0.190/secops/servlet/HardwareScript'
     patch_url = 'https://10.77.0.190/secops/servlet/PatchUpload'
-    url = sft_url
-    # data = json.dumps(get_software_info_linux())
+    url = hd_url
+    # data = json.dumps(get_hardware_info())
     # try:
     #     response = requests.post(url, data.encode('utf-8'), verify=False)
     #     print(response.status_code)
