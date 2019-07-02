@@ -109,13 +109,6 @@ def get_cpu_info():
         return cpu_list
 
 
-def get_mem_info():
-    pass
-
-def get_cdrom_info():
-    # cat /proc/sys/dev/cdrom/info
-    pass
-
 def get_usb_info():
     usb_dict = []
     # usb hub
@@ -150,6 +143,7 @@ def get_usb_info():
                     usb['HARDWARE_DESC'] = 'USB' + info[0][index:].strip()
             usb_dict.append(usb)
 
+    # usb controller
     with os.popen('lspci -vvv') as output:
         data = output.read().strip().split('\n\n')
         for each in data:
@@ -184,10 +178,11 @@ def get_mainboard_info():
             if len(data) > 1:
                 if data[0].strip() == 'Product Name':
                     info['HARDWARE_NAME'] = data[1].strip()
+                # elif data[0].strip() == 'Type':
+                    info['HARDWARE_TYPE'] = 'Base Board'
                 elif data[0].strip() == 'Serial Number':
                     info['HARDWARE_UUID'] = data[1].strip()
-                elif data[0].strip() == 'Type':
-                    info['HARDWARE_TYPE'] = data[1].strip()
+
                 elif data[0].strip() == 'Location In Chassis':
                     info['HARDWARE_POSITION'] = data[1].strip()
                 elif data[0].strip() == 'Manufacturer':
@@ -394,6 +389,24 @@ def get_other_info():
         #                     other_dict['HARDWARE_TYPE'] = value
         #         if len(other_dict) > 0:
         #             info.append(other_dict)
+		# 输入/输出
+    	with open('/proc/bus/input/devices') as f:
+        	tmp = f.read().split('\n\n')
+        	for data in tmp:
+            other_dict = {}
+            for line in data.splitlines():
+                if line.startswith('N'):
+                    other_dict['HARDWARE_NAME'] = line.split('"')[1].strip()
+                    other_dict['HARDWARE_TYPE'] = 'Input/Output Device'
+                    other_dict['HARDWARE_DESC'] = ''
+                    other_dict['HARDWARE_POSITION'] = ''
+                    other_dict['HARDWARE_STATUS'] = ''
+                elif line.startswith('I'):
+                    other_dict['HARDWARE_VENDOR'] = line.split(' ')[2].split('=')[1].strip()
+                elif line.startswith('U'):
+                    other_dict['HARDWARE_UUID'] = line.split('=')[1].strip()
+            if len(other_dict) > 0:
+                info.append(other_dict)
 
             # print(json.dumps(info, indent=4))
         return info
